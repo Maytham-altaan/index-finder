@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Journal Index Finder</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mute:#666;--line:#ddd;--card:#f7f7f8;--yes:#0a7d3c;--no:#b3261e;--acc:#1f5fbf}
+@media (prefers-color-scheme:dark){:root{--bg:#121316;--fg:#eee;--mute:#999;--line:#333;--card:#1c1d21;--yes:#4cc27a;--no:#ef6b62;--acc:#6ea0ff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+main{max-width:1000px;margin:auto;padding:16px}
+h1{margin:0 0 4px;font-size:22px}
+h2{font-size:17px;margin:22px 0 6px}
+.mute{color:var(--mute);font-size:13px}
+form{margin:14px 0}
+textarea{width:100%;padding:10px;font:16px system-ui,sans-serif;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);resize:vertical}
+fieldset{border:1px solid var(--line);border-radius:8px;margin:10px 0;display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center}
+legend{font-weight:600;padding:0 4px}
+label{white-space:nowrap}
+input[type=file]{font-size:12px;max-width:190px}
+button{padding:9px 18px;border:0;border-radius:8px;background:var(--acc);color:#fff;font-size:15px;cursor:pointer}
+a{color:var(--acc)}
+.res{display:block;padding:12px;margin:8px 0;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);text-decoration:none}
+.res:hover,.res:focus{border-color:var(--acc)}
+.res b{color:var(--acc);font-size:16px}
+.tag{display:inline-block;font-size:12px;padding:1px 7px;margin:4px 4px 0 0;border-radius:10px;border:1px solid var(--line)}
+.tag.y{color:var(--yes);border-color:var(--yes)}
+.pager{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:14px 0}
+.pager button{padding:7px 12px;background:var(--card);color:var(--fg);border:1px solid var(--line)}
+.pager button[aria-current]{background:var(--acc);color:#fff}
+.pager button:disabled{opacity:.4;cursor:default}
+</style>
+</head>
+<body>
+<main>
+<h1>Journal Index Finder</h1>
+<div class="mute">Enter your research title. It finds the most similar published research, filtered by your index checklist. Data: <a href="https://openalex.org">OpenAlex</a>, free.</div>
+
+<form id="f">
+  <textarea id="q" rows="2" placeholder="Your research title, e.g. Vancomycin trough monitoring in critically ill patients" required></textarea>
+  <fieldset>
+    <legend>Index checklist</legend>
+    <label><input type="checkbox" id="scopus" disabled> Scopus</label> <input type="file" data-list="scopus" accept=".csv,.xlsx,.xls">
+    <label><input type="checkbox" id="wos" disabled> Web of Science</label> <input type="file" data-list="wos" accept=".csv,.xlsx,.xls">
+    <label><input type="checkbox" id="medline"> MEDLINE / PubMed</label>
+    <label><input type="checkbox" id="doaj"> DOAJ</label>
+    <label><input type="checkbox" id="core"> Core journal (CWTS)</label>
+  </fieldset>
+  <fieldset>
+    <legend>Access</legend>
+    <label><input type="radio" name="oa" value="" checked> Open or closed</label>
+    <label><input type="radio" name="oa" value="open"> Open access only</label>
+    <label><input type="radio" name="oa" value="closed"> Closed only</label>
+    <label><input type="checkbox" id="free"> No APC (free to publish)</label>
+  </fieldset>
+  <div class="mute" id="loaded">Scopus / WoS need the official list file (Scopus: Elsevier "Source title list" .xlsx; WoS: Master Journal List export). Load it with the buttons above; it stays in your browser.</div>
+  <p><button>Search</button></p>
+</form>
+
+<div id="status" class="mute"></div>
+<div id="out" hidden>
+  <h2>Matching research</h2>
+  <div id="papers"></div>
+  <div class="pager" id="pager"></div>
+</div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const lists = {};   // 'scopus' | 'wos' -> Set of 8-char ISSNs
+const apc = {};     // source id -> apc_usd (works don't carry it)
+let works = [], cursor = '*';
+
+const norm = s => String(s ?? '').toUpperCase().replace(/[^0-9X]/g, '');
+// ponytail: Excel stores ISSNs as numbers and drops leading zeros, so accept 6–8 chars and pad.
+const issnCell = s => /^[\d\sX-]+$/i.test(String(s).trim()) && /^\d{5,7}[\dX]$/.test(norm(s)) ? norm(s).padStart(8, '0') : null;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const yn = v => v ? '<span class="y">Yes</span>' : '<span class="n">No</span>';
+
+// Any ISSN-looking cell anywhere in the sheet counts — Scopus and WoS name their columns differently.
+document.querySelectorAll('input[data-list]').forEach(inp => inp.onchange = async () => {
+  const file = inp.files[0]; if (!file) return;
+  const wb = XLSX.read(await file.arrayBuffer());
+  const set = new Set();
+  for (const name of wb.SheetNames)
+    for (const row of XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1 }))
+      for (const cell of row) { const i = cell != null && issnCell(cell); if (i) set.add(i); }
+  lists[inp.dataset.list] = set;
+  $(inp.dataset.list).disabled = false;
+  $(inp.dataset.list).checked = true;
+  $('loaded').textContent = Object.entries(lists).map(([k, v]) => `${k === 'wos' ? 'Web of Science' : 'Scopus'} list: ${v.size.toLocaleString()} ISSNs loaded`).join(' · ');
+  render();
+});
+
+const inList = (src, k) => (src.issn || []).some(i => lists[k].has(norm(i)));
+const index = src => ({
+  scopus: lists.scopus ? inList(src, 'scopus') : null,
+  wos: lists.wos ? inList(src, 'wos') : null,
+  medline: (src.listed_in || []).includes('medline'),
+  doaj: src.is_in_doaj, core: src.is_core, oa: src.is_oa,
+});
+
+function passes(src) {
+  if (!src || src.type !== 'journal') return false;
+  const x = index(src), oa = document.querySelector('[name=oa]:checked').value;
+  for (const k of ['scopus', 'wos', 'medline', 'doaj', 'core']) if ($(k).checked && !x[k]) return false;
+  if (oa === 'open' && !x.oa) return false;
+  if (oa === 'closed' && x.oa) return false;
+  if ($('free').checked && apc[src.id] !== 0) return false;
+  return true;
+}
+
+const PER = 10;
+let page = 1, total = 0, busy = false;
+
+// Fetch 200 similar papers at a time; Scopus/WoS can only be checked here in the browser, so filtering is client-side.
+async function load() {
+  busy = true;
+  $('status').textContent = 'Searching similar research…';
+  try {
+    const p = new URLSearchParams({
+      search: $('q').value.trim(), per_page: 200, cursor,
+      filter: 'primary_location.source.type:journal',
+      select: 'id,title,publication_year,doi,primary_location,open_access,cited_by_count,authorships',
+    });
+    const d = await (await fetch('https://api.openalex.org/works?' + p)).json();
+    if (!d.results) throw new Error(d.message || d.error || 'bad response');
+    works = works.concat(d.results);
+    cursor = d.meta.next_cursor;
+    total = d.meta.count;
+    // APC lives only on the source record: one call per 100 new journals.
+    const need = [...new Set(works.map(w => w.primary_location.source.id))].filter(id => !(id in apc));
+    for (let i = 0; i < need.length; i += 100) {
+      const ids = need.slice(i, i + 100).map(u => u.split('/').pop()).join('|');
+      const s = await (await fetch(`https://api.openalex.org/sources?filter=openalex:${ids}&per_page=100&select=id,apc_usd`)).json();
+      for (const r of s.results || []) apc[r.id] = r.apc_usd;
+    }
+  } catch (err) {
+    $('status').textContent = 'Search failed: ' + err.message;
+    cursor = null;
+  }
+  busy = false;
+  render();
+}
+
+const matching = () => works.filter(w => passes(w.primary_location.source));
+
+async function go(n) {
+  page = n;
+  // Not enough filtered results loaded for this page yet: pull more from OpenAlex.
+  while (matching().length < page * PER && cursor && !busy) await load();
+  render();
+  $('out').scrollIntoView({ behavior: 'smooth' });
+}
+
+function render() {
+  if (!works.length) return;
+  const ok = matching();
+  const pages = Math.max(1, Math.ceil(ok.length / PER));
+  if (page > pages && !cursor) page = pages;
+  const tags = [['scopus', 'Scopus'], ['wos', 'Web of Science'], ['medline', 'MEDLINE'], ['doaj', 'DOAJ'], ['core', 'Core']];
+
+  $('papers').innerHTML = ok.slice((page - 1) * PER, page * PER).map((w, i) => {
+    const s = w.primary_location.source, x = index(s);
+    const authors = (w.authorships || []).slice(0, 3).map(a => a.author.display_name).join(', ') + ((w.authorships || []).length > 3 ? ' et al.' : '');
+    return `<a class="res" href="${esc(w.doi || w.id)}" target="_blank" rel="noopener">
+      <b>${(page - 1) * PER + i + 1}. ${esc(w.title)}</b>
+      <div class="mute">${esc(authors)}</div>
+      <div class="mute">${w.publication_year || ''} · ${esc(s.display_name)} · ${esc(s.host_organization_name || '')} · cited ${w.cited_by_count}</div>
+      <div>${tags.filter(([k]) => x[k]).map(([, t]) => `<span class="tag y">${t}</span>`).join('')}
+        <span class="tag${w.open_access.is_oa ? ' y' : ''}">${w.open_access.is_oa ? 'Free to read' : 'Paywalled'}</span>
+        ${apc[s.id] != null ? `<span class="tag">APC $${apc[s.id]}</span>` : ''}</div>
+    </a>`;
+  }).join('') || '<p class="mute">No research passes your checklist in the results loaded. Untick a filter.</p>';
+
+  // Page buttons: first, last, and two either side of the current page.
+  const nums = [...new Set([1, page - 2, page - 1, page, page + 1, page + 2, pages])].filter(n => n >= 1 && n <= pages).sort((a, b) => a - b);
+  $('pager').innerHTML = `<button data-p="${page - 1}" ${page === 1 ? 'disabled' : ''}>‹ Prev</button>` +
+    nums.map(n => `<button data-p="${n}" ${n === page ? 'aria-current="page"' : ''}>${n}</button>`).join('') +
+    `<button data-p="${page + 1}" ${page >= pages && !cursor ? 'disabled' : ''}>Next ›</button>`;
+
+  $('out').hidden = false;
+  $('status').textContent = `${total.toLocaleString()} related papers · ${works.length} most similar checked · ${ok.length} match your checklist${cursor ? ' (more load as you page)' : ''}`;
+}
+
+$('pager').onclick = e => { const n = +e.target.dataset.p; if (n) go(n); };
+$('f').onsubmit = e => { e.preventDefault(); works = []; cursor = '*'; page = 1; go(1); };
+$('f').onchange = e => { if (!e.target.dataset.list && e.target.id !== 'q') go(1); };
+</script>
+</body>
+</html>
