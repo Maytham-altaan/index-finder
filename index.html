@@ -42,7 +42,7 @@ a{color:var(--acc)}
   <textarea id="q" rows="2" placeholder="Your research title, e.g. Vancomycin trough monitoring in critically ill patients" required></textarea>
   <fieldset>
     <legend>Index checklist</legend>
-    <label><input type="checkbox" id="scopus"> Scopus</label> <input type="file" data-list="scopus" accept=".csv,.xlsx,.xls">
+    <label><input type="checkbox" id="scopus"> Scopus (live)</label>
     <label><input type="checkbox" id="wos" disabled> Web of Science</label> <input type="file" data-list="wos" accept=".csv,.xlsx,.xls">
     <label><input type="checkbox" id="medline"> MEDLINE / PubMed</label>
     <label><input type="checkbox" id="doaj"> DOAJ</label>
@@ -50,8 +50,8 @@ a{color:var(--acc)}
   </fieldset>
   <fieldset>
     <legend>Live Scopus search</legend>
-    <input id="elsKey" type="password" placeholder="Your Elsevier API key" autocomplete="off" style="flex:1 1 220px;padding:7px">
-    <span class="mute">Free key: <a href="https://dev.elsevier.com/apikey/manage" target="_blank" rel="noopener">dev.elsevier.com</a>. With a key, ticking Scopus searches Scopus itself, live. Saved only in this browser.</span>
+    <input id="elsKey" type="password" placeholder="Optional: your own Elsevier API key" autocomplete="off" style="flex:1 1 220px;padding:7px">
+    <span class="mute">Ticking Scopus searches Scopus live for everyone. If the shared key hits its weekly limit, paste your own free key from <a href="https://dev.elsevier.com/apikey/manage" target="_blank" rel="noopener">dev.elsevier.com</a> (saved only in this browser).</span>
   </fieldset>
   <fieldset>
     <legend>Access</legend>
@@ -66,7 +66,7 @@ a{color:var(--acc)}
     <label>To <input type="number" id="y2" min="1900" max="2100" placeholder="any" style="width:90px;padding:6px"></label>
     <span class="mute" id="yq"></span>
   </fieldset>
-  <div class="mute" id="loaded">Scopus / WoS need the official list file (Scopus: Elsevier "Source title list" .xlsx; WoS: Master Journal List export). Load it with the buttons above; it stays in your browser.</div>
+  <div class="mute" id="loaded">Web of Science needs its official list file (Master Journal List export). Load it with the button above; it stays in your browser.</div>
   <p><button>Search</button></p>
 </form>
 
@@ -164,7 +164,10 @@ const yearFilter = () => { const [a, b] = yrs(); return a || b ? `publication_ye
 const now = new Date().getFullYear();
 $('yq').innerHTML = [5, 10].map(n => `<button type="button" data-y="${n}" style="padding:4px 10px;background:var(--card);color:var(--fg);border:1px solid var(--line)">Last ${n} years</button>`).join(' ');
 $('yq').onclick = e => { const n = +e.target.dataset.y; if (!n) return; $('y1').value = now - n + 1; $('y2').value = ''; $('y1').dispatchEvent(new Event('change', { bubbles: true })); };
-const liveScopus = () => $('scopus').checked && $('elsKey').value.trim();
+// Shared public key, at the owner's request. ponytail: one 20k/week quota for all visitors; if it runs out or gets revoked, users paste their own.
+const SITE_KEY = 'd61ce9d8cce27a3b560c019e76623632';
+const elsKey = () => $('elsKey').value.trim() || SITE_KEY;
+const liveScopus = () => $('scopus').checked;
 
 const STOP = new Set('the of and in on for with to a an by from at as is are was were be using use among between into its their study analysis effect effects role patients'.split(' '));
 const keywords = q => [...new Set(q.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [])].filter(w => w.length > 2 && !STOP.has(w));
@@ -183,7 +186,7 @@ async function scopusPage(n) {
   $('status').textContent = 'Searching Scopus…';
   try {
     const r = await fetch('https://api.elsevier.com/content/search/scopus?' + new URLSearchParams({ query, start: (n - 1) * PER, count: PER, sort: 'relevancy' }),
-      { headers: { 'X-ELS-APIKey': $('elsKey').value.trim(), Accept: 'application/json' } });
+      { headers: { 'X-ELS-APIKey': elsKey(), Accept: 'application/json' } });
     const d = await r.json();
     if (!r.ok) throw new Error(d['service-error']?.status?.statusText || d.error_response?.error_message || 'HTTP ' + r.status);
     const res = d['search-results'], count = +res['opensearch:totalResults'];
@@ -206,7 +209,7 @@ async function scopusPage(n) {
     $('out').hidden = false;
     $('status').textContent = `Scopus-indexed research, most similar to your title first (live from Scopus). MEDLINE / DOAJ / Core / APC filters don't apply in Scopus mode.`;
   } catch (err) {
-    $('status').textContent = 'Scopus search failed: ' + err.message + '. Check your Elsevier API key.';
+    $('status').textContent = 'Scopus search failed: ' + err.message + '. The shared Scopus key may have hit its weekly limit; paste your own free key above.';
   }
 }
 
@@ -222,10 +225,6 @@ const matching = () => works.filter(w => passes(w.primary_location.source));
 
 async function go(n) {
   if (liveScopus()) { await scopusPage(n); $('out').scrollIntoView({ behavior: 'smooth' }); return; }
-  if ($('scopus').checked && !lists.scopus) {
-    $('status').textContent = 'Scopus: paste your free Elsevier API key above for a live Scopus search (or load the Scopus list file).';
-    $('out').hidden = true; return;
-  }
   page = n;
   // Not enough filtered results loaded for this page yet: pull more from OpenAlex.
   while (matching().length < page * PER && cursor && !busy) await load();
