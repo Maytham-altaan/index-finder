@@ -189,7 +189,7 @@ async function scopusPage(n) {
     // Scopus caps start+count at 5000 without a cursor.
     pager(Math.max(1, Math.min(Math.ceil(count / PER), 5000 / PER)), false);
     $('out').hidden = false;
-    $('status').textContent = `${count.toLocaleString()} Scopus results (live from Scopus). MEDLINE / DOAJ / Core / APC filters apply to the OpenAlex search only.`;
+    $('status').textContent = `Scopus-indexed research, most similar to your title first (live from Scopus). MEDLINE / DOAJ / Core / APC filters don't apply in Scopus mode.`;
   } catch (err) {
     $('status').textContent = 'Scopus search failed: ' + err.message + '. Check your Elsevier API key.';
   }
