@@ -42,11 +42,16 @@ a{color:var(--acc)}
   <textarea id="q" rows="2" placeholder="Your research title, e.g. Vancomycin trough monitoring in critically ill patients" required></textarea>
   <fieldset>
     <legend>Index checklist</legend>
-    <label><input type="checkbox" id="scopus" disabled> Scopus</label> <input type="file" data-list="scopus" accept=".csv,.xlsx,.xls">
+    <label><input type="checkbox" id="scopus"> Scopus</label> <input type="file" data-list="scopus" accept=".csv,.xlsx,.xls">
     <label><input type="checkbox" id="wos" disabled> Web of Science</label> <input type="file" data-list="wos" accept=".csv,.xlsx,.xls">
     <label><input type="checkbox" id="medline"> MEDLINE / PubMed</label>
     <label><input type="checkbox" id="doaj"> DOAJ</label>
     <label><input type="checkbox" id="core"> Core journal (CWTS)</label>
+  </fieldset>
+  <fieldset>
+    <legend>Live Scopus search</legend>
+    <input id="elsKey" type="password" placeholder="Your Elsevier API key" autocomplete="off" style="flex:1 1 220px;padding:7px">
+    <span class="mute">Free key: <a href="https://dev.elsevier.com/apikey/manage" target="_blank" rel="noopener">dev.elsevier.com</a>. With a key, ticking Scopus searches Scopus itself, live. Saved only in this browser.</span>
   </fieldset>
   <fieldset>
     <legend>Access</legend>
@@ -88,7 +93,6 @@ document.querySelectorAll('input[data-list]').forEach(inp => inp.onchange = asyn
     for (const row of XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1 }))
       for (const cell of row) { const i = cell != null && issnCell(cell); if (i) set.add(i); }
   lists[inp.dataset.list] = set;
-  $(inp.dataset.list).disabled = false;
   $(inp.dataset.list).checked = true;
   $('loaded').textContent = Object.entries(lists).map(([k, v]) => `${k === 'wos' ? 'Web of Science' : 'Scopus'} list: ${v.size.toLocaleString()} ISSNs loaded`).join(' · ');
   render();
@@ -145,9 +149,68 @@ async function load() {
   render();
 }
 
+// ponytail: per-viewer key convenience only; it never leaves this browser except to api.elsevier.com.
+try { $('elsKey').value = localStorage.getItem('elsKey') || ''; } catch {}
+$('elsKey').onchange = () => { try { localStorage.setItem('elsKey', $('elsKey').value.trim()); } catch {} };
+const liveScopus = () => $('scopus').checked && $('elsKey').value.trim();
+
+const STOP = new Set('the of and in on for with to a an by from at as is are was were be using use among between into its their study analysis effect effects role patients'.split(' '));
+const keywords = q => [...new Set(q.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [])].filter(w => w.length > 2 && !STOP.has(w));
+
+async function scopusPage(n) {
+  page = n;
+  const words = keywords($('q').value);
+  if (!words.length) { $('status').textContent = 'Enter a longer title.'; return; }
+  const oa = document.querySelector('[name=oa]:checked').value;
+  // OR + relevancy sort: Scopus ANDs every word otherwise, and a full title then matches almost nothing.
+  let query = `TITLE-ABS-KEY(${words.join(' OR ')})`;
+  if (oa) query += ` AND OPENACCESS(${oa === 'open' ? 1 : 0})`;
+  $('status').textContent = 'Searching Scopus…';
+  try {
+    const r = await fetch('https://api.elsevier.com/content/search/scopus?' + new URLSearchParams({ query, start: (n - 1) * PER, count: PER, sort: 'relevancy' }),
+      { headers: { 'X-ELS-APIKey': $('elsKey').value.trim(), Accept: 'application/json' } });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d['service-error']?.status?.statusText || d.error_response?.error_message || 'HTTP ' + r.status);
+    const res = d['search-results'], count = +res['opensearch:totalResults'];
+    const entries = count ? res.entry : [];
+    $('papers').innerHTML = entries.map((e, i) => {
+      const link = e['prism:doi'] ? 'https://doi.org/' + e['prism:doi'] : (e.link || []).find(l => l['@ref'] === 'scopus')?.['@href'];
+      const issns = [e['prism:issn'], e['prism:eIssn']].filter(Boolean);
+      const wos = lists.wos && issns.some(i => lists.wos.has(norm(i)));
+      const free = e.openaccessFlag === true || e.openaccessFlag === 'true';
+      return `<a class="res" href="${esc(link)}" target="_blank" rel="noopener">
+        <b>${(n - 1) * PER + i + 1}. ${esc(e['dc:title'])}</b>
+        <div class="mute">${esc(e['dc:creator'] || '')}${e['dc:creator'] ? ' et al.' : ''}</div>
+        <div class="mute">${esc((e['prism:coverDate'] || '').slice(0, 4))} · ${esc(e['prism:publicationName'])} · cited ${esc(e['citedby-count'])}</div>
+        <div><span class="tag y">Scopus</span>${wos ? '<span class="tag y">Web of Science</span>' : ''}
+          <span class="tag${free ? ' y' : ''}">${free ? 'Free to read' : 'Paywalled'}</span></div>
+      </a>`;
+    }).join('') || '<p class="mute">No Scopus results.</p>';
+    // Scopus caps start+count at 5000 without a cursor.
+    pager(Math.max(1, Math.min(Math.ceil(count / PER), 5000 / PER)), false);
+    $('out').hidden = false;
+    $('status').textContent = `${count.toLocaleString()} Scopus results (live from Scopus). MEDLINE / DOAJ / Core / APC filters apply to the OpenAlex search only.`;
+  } catch (err) {
+    $('status').textContent = 'Scopus search failed: ' + err.message + '. Check your Elsevier API key.';
+  }
+}
+
+function pager(pages, more) {
+  // Page buttons: first, last, and two either side of the current page.
+  const nums = [...new Set([1, page - 2, page - 1, page, page + 1, page + 2, pages])].filter(n => n >= 1 && n <= pages).sort((a, b) => a - b);
+  $('pager').innerHTML = `<button data-p="${page - 1}" ${page === 1 ? 'disabled' : ''}>‹ Prev</button>` +
+    nums.map(n => `<button data-p="${n}" ${n === page ? 'aria-current="page"' : ''}>${n}</button>`).join('') +
+    `<button data-p="${page + 1}" ${page >= pages && !more ? 'disabled' : ''}>Next ›</button>`;
+}
+
 const matching = () => works.filter(w => passes(w.primary_location.source));
 
 async function go(n) {
+  if (liveScopus()) { await scopusPage(n); $('out').scrollIntoView({ behavior: 'smooth' }); return; }
+  if ($('scopus').checked && !lists.scopus) {
+    $('status').textContent = 'Scopus: paste your free Elsevier API key above for a live Scopus search (or load the Scopus list file).';
+    $('out').hidden = true; return;
+  }
   page = n;
   // Not enough filtered results loaded for this page yet: pull more from OpenAlex.
   while (matching().length < page * PER && cursor && !busy) await load();
@@ -175,11 +238,7 @@ function render() {
     </a>`;
   }).join('') || '<p class="mute">No research passes your checklist in the results loaded. Untick a filter.</p>';
 
-  // Page buttons: first, last, and two either side of the current page.
-  const nums = [...new Set([1, page - 2, page - 1, page, page + 1, page + 2, pages])].filter(n => n >= 1 && n <= pages).sort((a, b) => a - b);
-  $('pager').innerHTML = `<button data-p="${page - 1}" ${page === 1 ? 'disabled' : ''}>‹ Prev</button>` +
-    nums.map(n => `<button data-p="${n}" ${n === page ? 'aria-current="page"' : ''}>${n}</button>`).join('') +
-    `<button data-p="${page + 1}" ${page >= pages && !cursor ? 'disabled' : ''}>Next ›</button>`;
+  pager(pages, !!cursor);
 
   $('out').hidden = false;
   $('status').textContent = `${total.toLocaleString()} related papers · ${works.length} most similar checked · ${ok.length} match your checklist${cursor ? ' (more load as you page)' : ''}`;
@@ -187,7 +246,7 @@ function render() {
 
 $('pager').onclick = e => { const n = +e.target.dataset.p; if (n) go(n); };
 $('f').onsubmit = e => { e.preventDefault(); works = []; cursor = '*'; page = 1; go(1); };
-$('f').onchange = e => { if (!e.target.dataset.list && e.target.id !== 'q') go(1); };
+$('f').onchange = e => { if (!e.target.dataset.list && !['q', 'elsKey'].includes(e.target.id) && $('q').value.trim()) go(1); };
 </script>
 </body>
 </html>
