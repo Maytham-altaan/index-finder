@@ -31,6 +31,7 @@ a{color:var(--acc)}
 .pager button{padding:7px 12px;background:var(--card);color:var(--fg);border:1px solid var(--line)}
 .pager button[aria-current]{background:var(--acc);color:#fff}
 .pager button:disabled{opacity:.4;cursor:default}
+.footer{padding:16px 0 24px;text-align:center;color:var(--mute);font-size:12px;border-top:1px solid var(--line);margin-top:24px}
 </style>
 </head>
 <body>
@@ -51,7 +52,7 @@ a{color:var(--acc)}
   <fieldset>
     <legend>Live Scopus search</legend>
     <input id="elsKey" type="password" placeholder="Optional: your own Elsevier API key" autocomplete="off" style="flex:1 1 220px;padding:7px">
-    <span class="mute">Ticking Scopus searches Scopus live for everyone. If the shared key hits its weekly limit, paste your own free key from <a href="https://dev.elsevier.com/apikey/manage" target="_blank" rel="noopener">dev.elsevier.com</a> (saved only in this browser).</span>
+    <span class="mute">Ticking Scopus searches Scopus live for everyone. If the shared key hits its weekly limit, paste your own free key from <a href="https://dev.elsevier.com/apikey/manage" target="_blank" rel="noopener">Elsevier</a>.</span>
   </fieldset>
   <fieldset>
     <legend>Access</legend>
@@ -77,6 +78,7 @@ a{color:var(--acc)}
   <div class="pager" id="pager"></div>
 </div>
 </main>
+<footer class="footer">All copyright reserved for al-taan LLC for software development.</footer>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -87,7 +89,7 @@ let works = [], cursor = '*';
 const norm = s => String(s ?? '').toUpperCase().replace(/[^0-9X]/g, '');
 // ponytail: Excel stores ISSNs as numbers and drops leading zeros, so accept 6–8 chars and pad.
 const issnCell = s => /^[\d\sX-]+$/i.test(String(s).trim()) && /^\d{5,7}[\dX]$/.test(norm(s)) ? norm(s).padStart(8, '0') : null;
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const esc = s => String(s ?? '').replace(/[&<>\"]+/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const yn = v => v ? '<span class="y">Yes</span>' : '<span class="n">No</span>';
 
 // Any ISSN-looking cell anywhere in the sheet counts — Scopus and WoS name their columns differently.
